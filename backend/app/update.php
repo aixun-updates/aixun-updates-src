@@ -179,6 +179,7 @@ $payload = fillFirmware($payload);
 // rules for sorting and renaming of specific models
 $preferredPatterns = [
 	'^T[0-9A-Z]+$',
+	'^P[0-9A-Z]+$',
 ];
 $last = ['AIXUN'];
 $rename = [
@@ -266,10 +267,10 @@ foreach ($names as $name) {
 
 $payload = $sorted;
 $sorted = [];
-foreach ($payload as $name => $items) {
-	foreach ($preferredPatterns as $pattern) {
+foreach ($preferredPatterns as $pattern) {
+	foreach ($payload as $name => $items) {
 		if (preg_match('~' . $pattern . '~', $name)) {
-			$sorted[$name] = $payload[$name];
+			$sorted[$name] = $items;
 			unset($payload[$name]);
 		}
 	}
