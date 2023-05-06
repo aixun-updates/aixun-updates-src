@@ -1,0 +1,10 @@
+/backend/app/data/*
+/backend/app/vendor/
+/backend/files/*
+/backend/firmware/*
+/backend/*.json
+/dev/
+/*.php
+/*.cmd
+
+!.gitignore
