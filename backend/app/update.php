@@ -156,6 +156,26 @@ function decodeCorruptedJson($contents)
 	return $payload;
 }
 
+function normalizePayloadVersionFormat(array $payload)
+{
+	foreach ($payload as $name => $items) {
+		foreach ($items as $index => $item) {
+			// we expect to have original 'NAME:2.0' version format
+			// but sometimes different format are used like '2.0' or 'v2.0' or 'V2.0'
+			// this is workaround to normalize all formats to unified 'NAME:2.0' format
+			// in order to keep backward compatibility and to avoid duplicate versions
+			if (stripos($item['version'], 'v') === 0) {
+				$item['version'] = substr($item['version'], 1);
+			}
+			if (strpos($item['version'], ':') === false) {
+				$item['version'] = $name . ':' . $item['version'];
+			}
+			$payload[$name][$index] = $item;
+		}
+	}
+	return $payload;
+}
+
 // fetch latest changelogs from manufacturer
 $urls = [
 	'http://api.jcxxkeji.com:9000/upload/bott/JCID_dev_upgrade_note.json',
@@ -172,6 +192,7 @@ foreach ($urls as $url) {
 	$decoded = decodeCorruptedJson($contents);
 	$payload = array_merge_recursive($payload, $decoded);
 }
+$payload = normalizePayloadVersionFormat($payload);
 
 // fetch and fill firmware files
 $payload = fillFirmware($payload);
@@ -192,6 +213,7 @@ if (file_exists($changelogPath)) {
 	$contents = file_get_contents($changelogPath);
 	$previousPayload = json_decode($contents, true);
 	if ($previousPayload) {
+		$previousPayload = normalizePayloadVersionFormat($previousPayload);
 		foreach ($previousPayload as $name => $items) {
 			$index = array_search($name, $rename);
 			if ($index !== false) {
