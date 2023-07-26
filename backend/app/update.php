@@ -21,15 +21,33 @@ function endsWith($haystack, $needle)
 	return substr_compare($haystack, $needle, -strlen($needle)) === 0;
 }
 
-function fetchFile($url, $path)
+function rmTree($directory)
+{
+	$files = new \RecursiveIteratorIterator(
+		new \RecursiveDirectoryIterator($directory, \RecursiveDirectoryIterator::SKIP_DOTS),
+		\RecursiveIteratorIterator::CHILD_FIRST
+	);
+	foreach ($files as $fileinfo) {
+		if ($fileinfo->isDir()) {
+			rmdir($fileinfo->getRealPath());
+		} else {
+			unlink($fileinfo->getRealPath());
+		}
+	}
+	rmdir($directory);
+}
+
+function fetchFile($method, $url, $path, $options = [])
 {
 	try {
 		$temp = $path . '.temp';
-		$client = new Client();
-		$client->request('get', $url, [
+		$options += [
+			'verify' => false,
 			'sink' => $temp,
 			'timeout' => 600,
-		]);
+		];
+		$client = new Client();
+		$client->request($method, $url, $options);
 		if (file_exists($path)) {
 			unlink($path);
 		}
@@ -49,7 +67,7 @@ function sanitize($string)
 	return $string;
 }
 
-function fillFirmware($payload)
+function fillFirmware($payload, $firmwareTemplateFile, array $firmwareLinks)
 {
 	global $wwwDir, $dataDir;
 
@@ -66,7 +84,9 @@ function fillFirmware($payload)
 	}
 
 	$templateFile = $dataDir . '/template.txt';
-	fetchFile('http://api.jcxxkeji.com:9000/upload/bott/JCID_config_test.zip', $templateFile);
+	// old url: http://api.jcxxkeji.com:9000/upload/bott/JCID_config_test.zip
+	// new url is obtained dynamically from API
+	fetchFile('get', $firmwareTemplateFile, $templateFile);
 
 	$section = null;
 	$sections = [];
@@ -104,14 +124,18 @@ function fillFirmware($payload)
 			if (isset($list[$name][$version])) {
 				$fileName = $list[$name][$version];
 			} else {
-				$url = 'http://api.jcxxkeji.com:9000/upload/bott/' . $prefix . '_' . $version . '.bin';
+				$fileName = $prefix . '_' . $version . '.bin';
+				if (isset($firmwareLinks[$fileName])) {
+					$url = $firmwareLinks[$fileName];
+				} else {
+					$url = 'http://api.jcxxkeji.com:9000/upload/bott/' . $fileName;
+				}
 
-				$fileName = basename($url);
 				$firmwarePath = $firmwareDir . '/' . sanitize($fileName);
 
 				if (!file_exists($firmwarePath)) {
 					try {
-						fetchFile($url, $firmwarePath);
+						fetchFile('get', $url, $firmwarePath);
 					} catch (ClientException $e) {
 						if ($e->getCode() === 404) {
 							$fileName = false;
@@ -182,20 +206,77 @@ $urls = [
 	'http://api.jcxxkeji.com:9000/upload/bott/JCID_config_note.zip', // yes - this is fake .zip file containing JSON
 ];
 
-$payload = [];
+$filePath = $dataDir . '/remote-aixun-file-list.json';
+fetchFile('post', 'https://api.jcidtech.com/api/v1/aixun_config_file_controller/query', $filePath, [
+	'headers' => [
+		'ContentType' => 'application/json',
+	],
+]);
+$contents = file_get_contents($filePath);
+$response = decodeCorruptedJson($contents);
+$firmwareLinks = [];
+$firmwareTemplateFile = null;
+if (isset($response['msg']) && $response['msg'] === 'success') {
+	foreach ($response['data'] as $item) {
+		if ($item['fileName'] === 'JCID_dev_upgrade_note.zip') {
+			$urls[] = $item['url'];
+		} else if ($item['fileName'] === 'JCID_config_test.zip') {
+			$firmwareTemplateFile = $item['url'];
+		} else if (endsWith($item['fileName'], '.bin')) {
+			$firmwareLinks[$item['fileName']] = $item['url'];
+		}
+	}
+}
+
+$files = [];
+$directoriesToRemove = [];
 foreach ($urls as $url) {
 	$key = sha1($url);
-	$filePath = $dataDir . '/remote-' . $key . '.json';
-	fetchFile($url, $filePath);
 
+	// only API returns actual .zip files
+	$zip = endsWith($url, '.zip') && strpos($url, 'aixun-file.oss-cn-shenzhen.aliyuncs.com') !== false;
+
+	$filePath = $dataDir . '/remote-' . $key . '.' . ($zip ? 'zip' : 'json');
+	fetchFile('get', $url, $filePath);
+
+	if ($zip) {
+		$zip = new \ZipArchive();
+		$zip->open($filePath);
+		$tempDir = $filePath . '-extracted';
+		if (!file_exists($tempDir)) {
+			mkdir($tempDir, 0777, true);
+		}
+		$zip->extractTo($tempDir);
+		$zip->close();
+
+		foreach (scandir($tempDir) as $item) {
+			if (endsWith($item, '.json')) {
+				$files[] = $tempDir . DIRECTORY_SEPARATOR . $item;
+			}
+		}
+
+		unlink($filePath);
+		$directoriesToRemove[] = $tempDir;
+	} else {
+		$files[] = $filePath;
+	}
+}
+
+$payload = [];
+foreach ($files as $filePath) {
 	$contents = file_get_contents($filePath);
 	$decoded = decodeCorruptedJson($contents);
 	$payload = array_merge_recursive($payload, $decoded);
 }
+
+foreach ($directoriesToRemove as $path) {
+	rmTree($path);
+}
+
 $payload = normalizePayloadVersionFormat($payload);
 
 // fetch and fill firmware files
-$payload = fillFirmware($payload);
+$payload = fillFirmware($payload, $firmwareTemplateFile, $firmwareLinks);
 
 // rules for sorting and renaming of specific models
 $preferredPatterns = [
