@@ -45,9 +45,13 @@ h2 {
 	text-decoration: none;
 }
 
-.disclaimer {
+.footer {
 	margin: 30px 0 0 0;
 	padding: 15px 0 0 0;
 	border-top: 1px solid #ddd;
 	color: #999;
+}
+
+.footer .latest-updates {
+	display: none;
 }

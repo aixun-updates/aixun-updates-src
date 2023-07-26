@@ -397,4 +397,62 @@ $payload = $sorted;
 $payloadJson = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
 file_put_contents($changelogPath, $payloadJson);
 
+// latest
+$flattened = [];
+foreach ($payload as $name => $versions) {
+	foreach ($versions as $item) {
+		if ($name === 'App') {
+			continue;
+		}
+		$date = \DateTime::createFromFormat('Y-m-d', $item['time']);
+		$date->setTime(0, 0);
+		$flattened[] = [
+			'name' => $name,
+			'version' => $item['version'],
+			'date' => $date,
+			'timestamp' => $date->getTimestamp(),
+		];
+	}
+}
+
+usort($flattened, function ($a, $b) {
+	$a = $a['timestamp'];
+	$b = $b['timestamp'];
+	if ($a > $b) {
+		return 1;
+	} else if ($a < $b) {
+		return -1;
+	}
+	return 0;
+});
+
+$latest = [];
+$mostRecentDate = null;
+for ($number = 1; $number <= 5; $number++) {
+	$item = array_pop($flattened);
+	if ($item) {
+		if (preg_match('~[a-z0-9]+:v?([a-z0-9.]+)~i', $item['version'], $matches)) {
+			$item['version'] = $matches[1];
+		}
+		if ($mostRecentDate === null) {
+			$mostRecentDate = $item['date'];
+		}
+		$date = $item['date']->format('Y-m-d');
+		$latest[] = $item['name'] . '-' . $item['version'] . '@' . $date;
+	}
+}
+$latest = implode(', ', $latest);
+if ($mostRecentDate !== null) {
+	$now = new \DateTime();
+	$now->setTime(0, 0);
+	$diff = $now->getTimestamp() - $mostRecentDate->getTimestamp();
+	$days = (int) round($diff / 86400);
+	$latest = $days . ' ' . ($days === 1 ? 'day' : 'days') . ' ago (' . $latest . ')';
+}
+$latest = [
+	'message' => $latest,
+];
+$latestJson = json_encode($latest, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+file_put_contents($wwwDir . '/files/latest.json', $latestJson);
+
 echo 'ok' . "\n";

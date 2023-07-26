@@ -35,6 +35,16 @@ $(function () {
 	});
 
 	$.get({
+		url: config.rootUrl + '/files/latest.json',
+		cache: false,
+		success: function (data) {
+			var target = $('.footer .latest-updates');
+			target.find('[data-latest-updates]').text(data.message);
+			target.show();
+		}
+	});
+
+	$.get({
 		url: config.rootUrl + '/files/changelog.json',
 		cache: false,
 		success: function (data) {
