@@ -125,7 +125,10 @@ function fillFirmware($payload, $firmwareTemplateFile, array $firmwareLinks)
 				$fileName = $list[$name][$version];
 			} else {
 				$fileName = $prefix . '_' . $version . '.bin';
-				if (isset($firmwareLinks[$fileName])) {
+				if (isset($item['url'])) {
+					$url = $item['url'];
+					$fileName = $item['fileName'];
+				} else if (isset($firmwareLinks[$fileName])) {
 					$url = $firmwareLinks[$fileName];
 				} else {
 					$url = 'http://api.jcxxkeji.com:9000/upload/bott/' . $fileName;
@@ -180,24 +183,22 @@ function decodeCorruptedJson($contents)
 	return $payload;
 }
 
-function normalizePayloadVersionFormat(array $payload)
+function normalizePayloadVersionFormat($device, array $versions)
 {
-	foreach ($payload as $name => $items) {
-		foreach ($items as $index => $item) {
-			// we expect to have original 'NAME:2.0' version format
-			// but sometimes different format are used like '2.0' or 'v2.0' or 'V2.0'
-			// this is workaround to normalize all formats to unified 'NAME:2.0' format
-			// in order to keep backward compatibility and to avoid duplicate versions
-			if (stripos($item['version'], 'v') === 0) {
-				$item['version'] = substr($item['version'], 1);
-			}
-			if (strpos($item['version'], ':') === false) {
-				$item['version'] = $name . ':' . $item['version'];
-			}
-			$payload[$name][$index] = $item;
+	foreach ($versions as $index => $item) {
+		// we expect to have original 'NAME:2.0' version format
+		// but sometimes different format are used like '2.0' or 'v2.0' or 'V2.0'
+		// this is workaround to normalize all formats to unified 'NAME:2.0' format
+		// in order to keep backward compatibility and to avoid duplicate versions
+		if (stripos($item['version'], 'v') === 0) {
+			$item['version'] = substr($item['version'], 1);
 		}
+		if (strpos($item['version'], ':') === false) {
+			$item['version'] = $device . ':' . $item['version'];
+		}
+		$versions[$index] = $item;
 	}
-	return $payload;
+	return $versions;
 }
 
 // fetch latest changelogs from manufacturer
@@ -262,18 +263,65 @@ foreach ($urls as $url) {
 	}
 }
 
+$apiChangelogPath = $dataDir . '/remote-aixun-api-changelog.json';
+fetchFile('post', 'https://api.jcidtech.com/api/v1/aixun_config_file_new_controller/query', $apiChangelogPath, [
+	'headers' => [
+		'ContentType' => 'application/json',
+	],
+]);
+$contents = file_get_contents($apiChangelogPath);
+$response = decodeCorruptedJson($contents);
+$converted = [];
+foreach ($response['data'] as $group) {
+	$device = $group['fileName'];
+	if (!isset($converted[$device])) {
+		$converted[$device] = [];
+	}
+	foreach ($group['list'] as $item) {
+		$converted[$device][] = [
+			'time' => $item['updateTime'],
+			'version' => $item['version'],
+			'ch_note' => $item['descCn'],
+			'en_note' => $item['descEn'],
+			'url' => $item['url'],
+			'fileName' => $item['fileName'],
+		];
+	}
+}
+if (count($converted)) {
+	$apiChangelogPath = $dataDir . '/remote-aixun-api-changelog-converted.json';
+	file_put_contents($apiChangelogPath, json_encode($converted, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+	$files[] = $apiChangelogPath;
+}
+
 $payload = [];
 foreach ($files as $filePath) {
 	$contents = file_get_contents($filePath);
 	$decoded = decodeCorruptedJson($contents);
-	$payload = array_merge_recursive($payload, $decoded);
+	foreach ($decoded as $device => $versions) {
+		$versions = normalizePayloadVersionFormat($device, $versions);
+		if (!isset($payload[$device])) {
+			$payload[$device] = $versions;
+		} else {
+			$mapping = [];
+			foreach ($payload[$device] as $index => $item) {
+				$mapping[$item['version']] = $index;
+			}
+			foreach ($versions as $item) {
+				if (isset($mapping[$item['version']])) {
+					$index = $mapping[$item['version']];
+					$payload[$device][$index] = $item;
+				} else {
+					$payload[$device][] = $item;
+				}
+			}
+		}
+	}
 }
 
 foreach ($directoriesToRemove as $path) {
 	rmTree($path);
 }
-
-$payload = normalizePayloadVersionFormat($payload);
 
 // fetch and fill firmware files
 $payload = fillFirmware($payload, $firmwareTemplateFile, $firmwareLinks);
@@ -294,8 +342,9 @@ if (file_exists($changelogPath)) {
 	$contents = file_get_contents($changelogPath);
 	$previousPayload = json_decode($contents, true);
 	if ($previousPayload) {
-		$previousPayload = normalizePayloadVersionFormat($previousPayload);
 		foreach ($previousPayload as $name => $items) {
+			$items = normalizePayloadVersionFormat($name, $items);
+
 			$index = array_search($name, $rename);
 			if ($index !== false) {
 				$name = $index;
@@ -319,11 +368,32 @@ if (file_exists($changelogPath)) {
 }
 
 // sorting and filtering of duplicates
+$excludedDevices = [
+	'AIXUN_Dev_Pic',
+	'AIXUN_Upgrade_Data',
+	'D11_offical_standard',
+	'testFileName1',
+	'AAA',
+	'Hulu_J2',
+	'Hulu_J3',
+	'Hulu_U1',
+	'iPhoneX_J5800',
+	'Power',
+	'Updater',
+	'AIXUN', // App
+];
 $formatted = [];
 $unique = [];
 foreach ($payload as $name => $items) {
+	if (in_array($name, $excludedDevices)) {
+		continue;
+	}
+
 	foreach ($items as $index => $item) {
 		$date = \DateTime::createFromFormat('Y-m-d', $item['time']);
+		if (!$date) {
+			$date = \DateTime::createFromFormat('Y-m-d H:i:s', $item['time']);
+		}
 		if (!$date) {
 			throw new \Exception('unable to parse date: ' . $item['time']);
 		}
