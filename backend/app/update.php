@@ -190,6 +190,9 @@ function normalizePayloadVersionFormat($device, array $versions)
 		// but sometimes different format are used like '2.0' or 'v2.0' or 'V2.0'
 		// this is workaround to normalize all formats to unified 'NAME:2.0' format
 		// in order to keep backward compatibility and to avoid duplicate versions
+		if (stripos($item['version'], 'aixun_') === 0) {
+			$item['version'] = substr($item['version'], 6);
+		}
 		if (stripos($item['version'], 'v') === 0) {
 			$item['version'] = substr($item['version'], 1);
 		}
@@ -348,6 +351,8 @@ if (file_exists($changelogPath)) {
 			$index = array_search($name, $rename);
 			if ($index !== false) {
 				$name = $index;
+			} else if (stripos($name, 'aixun_') === 0) {
+				$name = substr($name, 6);
 			}
 
 			if (isset($payload[$name])) {
@@ -379,8 +384,6 @@ $excludedDevices = [
 	'Hulu_U1',
 	'iPhoneX_J5800',
 	'Power',
-	'Updater',
-	'AIXUN', // App
 ];
 $formatted = [];
 $unique = [];
@@ -457,6 +460,8 @@ foreach ($payload as $name => $items) {
 foreach ($payload as $name => $items) {
 	if (isset($rename[$name])) {
 		$name = $rename[$name];
+	} else if (stripos($name, 'aixun_') === 0) {
+		$name = substr($name, 6);
 	}
 	$sorted[$name] = $items;
 }
