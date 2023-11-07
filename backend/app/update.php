@@ -4,17 +4,10 @@ namespace App;
 
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\ClientException;
+use GuzzleHttp\Exception\ConnectException;
 
-
-if (PHP_SAPI !== 'cli') {
-	echo 'error: this is CLI script only';
-	exit(1);
-}
 
 require __DIR__ . '/vendor/autoload.php';
-
-$wwwDir = realpath(__DIR__ . '/../');
-$dataDir = __DIR__ . '/data';
 
 function endsWith($haystack, $needle)
 {
@@ -204,330 +197,350 @@ function normalizePayloadVersionFormat($device, array $versions)
 	return $versions;
 }
 
-// fetch latest changelogs from manufacturer
-$urls = [
-	'http://api.jcxxkeji.com:9000/upload/bott/JCID_dev_upgrade_note.json',
-	'http://api.jcxxkeji.com:9000/upload/bott/JCID_config_note.zip', // yes - this is fake .zip file containing JSON
-];
+function update($dataDir, $wwwDir)
+{
+	// fetch latest changelogs from manufacturer
+	$urls = [
+		'http://api.jcxxkeji.com:9000/upload/bott/JCID_dev_upgrade_note.json',
+		'http://api.jcxxkeji.com:9000/upload/bott/JCID_config_note.zip', // this is fake .zip file containing JSON
+	];
 
-$filePath = $dataDir . '/remote-aixun-file-list.json';
-fetchFile('post', 'https://api.jcidtech.com/api/v1/aixun_config_file_controller/query', $filePath, [
-	'headers' => [
-		'ContentType' => 'application/json',
-	],
-]);
-$contents = file_get_contents($filePath);
-$response = decodeCorruptedJson($contents);
-$firmwareLinks = [];
-$firmwareTemplateFile = null;
-if (isset($response['msg']) && $response['msg'] === 'success') {
-	foreach ($response['data'] as $item) {
-		if ($item['fileName'] === 'JCID_dev_upgrade_note.zip') {
-			$urls[] = $item['url'];
-		} else if ($item['fileName'] === 'JCID_config_test.zip') {
-			$firmwareTemplateFile = $item['url'];
-		} else if (endsWith($item['fileName'], '.bin')) {
-			$firmwareLinks[$item['fileName']] = $item['url'];
-		}
-	}
-}
-
-$files = [];
-$directoriesToRemove = [];
-foreach ($urls as $url) {
-	$key = sha1($url);
-
-	// only API returns actual .zip files
-	$zip = endsWith($url, '.zip') && strpos($url, 'aixun-file.oss-cn-shenzhen.aliyuncs.com') !== false;
-
-	$filePath = $dataDir . '/remote-' . $key . '.' . ($zip ? 'zip' : 'json');
-	fetchFile('get', $url, $filePath);
-
-	if ($zip) {
-		$zip = new \ZipArchive();
-		$zip->open($filePath);
-		$tempDir = $filePath . '-extracted';
-		if (!file_exists($tempDir)) {
-			mkdir($tempDir, 0777, true);
-		}
-		$zip->extractTo($tempDir);
-		$zip->close();
-
-		foreach (scandir($tempDir) as $item) {
-			if (endsWith($item, '.json')) {
-				$files[] = $tempDir . DIRECTORY_SEPARATOR . $item;
-			}
-		}
-
-		unlink($filePath);
-		$directoriesToRemove[] = $tempDir;
-	} else {
-		$files[] = $filePath;
-	}
-}
-
-$apiChangelogPath = $dataDir . '/remote-aixun-api-changelog.json';
-fetchFile('post', 'https://api.jcidtech.com/api/v1/aixun_config_file_new_controller/query', $apiChangelogPath, [
-	'headers' => [
-		'ContentType' => 'application/json',
-	],
-]);
-$contents = file_get_contents($apiChangelogPath);
-$response = decodeCorruptedJson($contents);
-$converted = [];
-foreach ($response['data'] as $group) {
-	$device = $group['fileName'];
-	if (!isset($converted[$device])) {
-		$converted[$device] = [];
-	}
-	foreach ($group['list'] as $item) {
-		$converted[$device][] = [
-			'time' => $item['updateTime'],
-			'version' => $item['version'],
-			'ch_note' => $item['descCn'],
-			'en_note' => $item['descEn'],
-			'url' => $item['url'],
-			'fileName' => $item['fileName'],
-		];
-	}
-}
-if (count($converted)) {
-	$apiChangelogPath = $dataDir . '/remote-aixun-api-changelog-converted.json';
-	file_put_contents($apiChangelogPath, json_encode($converted, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
-	$files[] = $apiChangelogPath;
-}
-
-$payload = [];
-foreach ($files as $filePath) {
+	$filePath = $dataDir . '/remote-aixun-file-list.json';
+	fetchFile('post', 'https://api.jcidtech.com/api/v1/aixun_config_file_controller/query', $filePath, [
+		'headers' => [
+			'ContentType' => 'application/json',
+		],
+	]);
 	$contents = file_get_contents($filePath);
-	$decoded = decodeCorruptedJson($contents);
-	foreach ($decoded as $device => $versions) {
-		$versions = normalizePayloadVersionFormat($device, $versions);
-		if (!isset($payload[$device])) {
-			$payload[$device] = $versions;
-		} else {
-			$mapping = [];
-			foreach ($payload[$device] as $index => $item) {
-				$mapping[$item['version']] = $index;
-			}
-			foreach ($versions as $item) {
-				if (isset($mapping[$item['version']])) {
-					$index = $mapping[$item['version']];
-					$payload[$device][$index] = $item;
-				} else {
-					$payload[$device][] = $item;
-				}
+	$response = decodeCorruptedJson($contents);
+	$firmwareLinks = [];
+	$firmwareTemplateFile = null;
+	if (isset($response['msg']) && $response['msg'] === 'success') {
+		foreach ($response['data'] as $item) {
+			if ($item['fileName'] === 'JCID_dev_upgrade_note.zip') {
+				$urls[] = $item['url'];
+			} else if ($item['fileName'] === 'JCID_config_test.zip') {
+				$firmwareTemplateFile = $item['url'];
+			} else if (endsWith($item['fileName'], '.bin')) {
+				$firmwareLinks[$item['fileName']] = $item['url'];
 			}
 		}
 	}
-}
 
-foreach ($directoriesToRemove as $path) {
-	rmTree($path);
-}
+	$files = [];
+	$directoriesToRemove = [];
+	foreach ($urls as $url) {
+		$key = sha1($url);
 
-// fetch and fill firmware files
-$payload = fillFirmware($payload, $firmwareTemplateFile, $firmwareLinks);
+		// only API returns actual .zip files
+		$zip = endsWith($url, '.zip') && strpos($url, 'aixun-file.oss-cn-shenzhen.aliyuncs.com') !== false;
 
-// rules for sorting and renaming of specific models
-$preferredPatterns = [
-	'^T[0-9A-Z]+$',
-	'^P[0-9A-Z]+$',
-];
-$last = ['AIXUN'];
-$rename = [
-	'AIXUN' => 'App',
-];
+		$filePath = $dataDir . '/remote-' . $key . '.' . ($zip ? 'zip' : 'json');
+		fetchFile('get', $url, $filePath);
 
-// merge previous changelog with current
-$changelogPath = $wwwDir . '/files/changelog.json';
-if (file_exists($changelogPath)) {
-	$contents = file_get_contents($changelogPath);
-	$previousPayload = json_decode($contents, true);
-	if ($previousPayload) {
-		foreach ($previousPayload as $name => $items) {
-			$items = normalizePayloadVersionFormat($name, $items);
+		if ($zip) {
+			$zip = new \ZipArchive();
+			$zip->open($filePath);
+			$tempDir = $filePath . '-extracted';
+			if (!file_exists($tempDir)) {
+				mkdir($tempDir, 0777, true);
+			}
+			$zip->extractTo($tempDir);
+			$zip->close();
 
-			$index = array_search($name, $rename);
-			if ($index !== false) {
-				$name = $index;
-			} else if (stripos($name, 'aixun_') === 0) {
-				$name = substr($name, 6);
+			foreach (scandir($tempDir) as $item) {
+				if (endsWith($item, '.json')) {
+					$files[] = $tempDir . DIRECTORY_SEPARATOR . $item;
+				}
 			}
 
-			if (isset($payload[$name])) {
-				$currentVersions = [];
-				foreach ($payload[$name] as $item) {
-					$currentVersions[] = $item['version'];
+			unlink($filePath);
+			$directoriesToRemove[] = $tempDir;
+		} else {
+			$files[] = $filePath;
+		}
+	}
+
+	$apiChangelogPath = $dataDir . '/remote-aixun-api-changelog.json';
+	fetchFile('post', 'https://api.jcidtech.com/api/v1/aixun_config_file_new_controller/query', $apiChangelogPath, [
+		'headers' => [
+			'ContentType' => 'application/json',
+		],
+	]);
+	$contents = file_get_contents($apiChangelogPath);
+	$response = decodeCorruptedJson($contents);
+	$converted = [];
+	foreach ($response['data'] as $group) {
+		$device = $group['fileName'];
+		if (!isset($converted[$device])) {
+			$converted[$device] = [];
+		}
+		foreach ($group['list'] as $item) {
+			$converted[$device][] = [
+				'time' => $item['updateTime'],
+				'version' => $item['version'],
+				'ch_note' => $item['descCn'],
+				'en_note' => $item['descEn'],
+				'url' => $item['url'],
+				'fileName' => $item['fileName'],
+			];
+		}
+	}
+	if (count($converted)) {
+		$apiChangelogPath = $dataDir . '/remote-aixun-api-changelog-converted.json';
+		file_put_contents($apiChangelogPath, json_encode($converted, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+		$files[] = $apiChangelogPath;
+	}
+
+	$payload = [];
+	foreach ($files as $filePath) {
+		$contents = file_get_contents($filePath);
+		$decoded = decodeCorruptedJson($contents);
+		foreach ($decoded as $device => $versions) {
+			$versions = normalizePayloadVersionFormat($device, $versions);
+			if (!isset($payload[$device])) {
+				$payload[$device] = $versions;
+			} else {
+				$mapping = [];
+				foreach ($payload[$device] as $index => $item) {
+					$mapping[$item['version']] = $index;
 				}
-				foreach ($items as $item) {
-					if (!in_array($item['version'], $currentVersions)) {
-						$payload[$name][] = $item;
+				foreach ($versions as $item) {
+					if (isset($mapping[$item['version']])) {
+						$index = $mapping[$item['version']];
+						$payload[$device][$index] = $item;
+					} else {
+						$payload[$device][] = $item;
 					}
 				}
-			} else {
-				$payload[$name] = $items;
 			}
 		}
 	}
-}
 
-// sorting and filtering of duplicates
-$excludedDevices = [
-	'AIXUN_Dev_Pic',
-	'AIXUN_Upgrade_Data',
-	'D11_offical_standard',
-	'testFileName1',
-	'AAA',
-	'Hulu_J2',
-	'Hulu_J3',
-	'Hulu_U1',
-	'iPhoneX_J5800',
-	'Power',
-];
-$formatted = [];
-$unique = [];
-foreach ($payload as $name => $items) {
-	if (in_array($name, $excludedDevices)) {
-		continue;
+	foreach ($directoriesToRemove as $path) {
+		rmTree($path);
 	}
 
-	foreach ($items as $index => $item) {
-		$date = \DateTime::createFromFormat('Y-m-d', $item['time']);
-		if (!$date) {
-			$date = \DateTime::createFromFormat('Y-m-d H:i:s', $item['time']);
-		}
-		if (!$date) {
-			throw new \Exception('unable to parse date: ' . $item['time']);
-		}
-		$item['time'] = $date->format('Y-m-d');
-		$item['sortKey'] = $date->getTimestamp();
+	// fetch and fill firmware files
+	$payload = fillFirmware($payload, $firmwareTemplateFile, $firmwareLinks);
 
-		$key = $item['time'] . '-' . $item['version'];
-		if (in_array($key, $unique)) {
-			unset($items[$index]);
+	// rules for sorting and renaming of specific models
+	$preferredPatterns = [
+		'^T[0-9A-Z]+$',
+		'^P[0-9A-Z]+$',
+	];
+	$last = ['AIXUN'];
+	$rename = [
+		'AIXUN' => 'App',
+	];
+
+	// merge previous changelog with current
+	$changelogPath = $wwwDir . '/files/changelog.json';
+	if (file_exists($changelogPath)) {
+		$contents = file_get_contents($changelogPath);
+		$previousPayload = json_decode($contents, true);
+		if ($previousPayload) {
+			foreach ($previousPayload as $name => $items) {
+				$items = normalizePayloadVersionFormat($name, $items);
+
+				$index = array_search($name, $rename);
+				if ($index !== false) {
+					$name = $index;
+				} else if (stripos($name, 'aixun_') === 0) {
+					$name = substr($name, 6);
+				}
+
+				if (isset($payload[$name])) {
+					$currentVersions = [];
+					foreach ($payload[$name] as $item) {
+						$currentVersions[] = $item['version'];
+					}
+					foreach ($items as $item) {
+						if (!in_array($item['version'], $currentVersions)) {
+							$payload[$name][] = $item;
+						}
+					}
+				} else {
+					$payload[$name] = $items;
+				}
+			}
+		}
+	}
+
+	// sorting and filtering of duplicates
+	$excludedDevices = [
+		'AIXUN_Dev_Pic',
+		'AIXUN_Upgrade_Data',
+		'D11_offical_standard',
+		'testFileName1',
+		'AAA',
+		'Hulu_J2',
+		'Hulu_J3',
+		'Hulu_U1',
+		'iPhoneX_J5800',
+		'Power',
+	];
+	$formatted = [];
+	$unique = [];
+	foreach ($payload as $name => $items) {
+		if (in_array($name, $excludedDevices)) {
 			continue;
 		}
-		$unique[] = $key;
 
-		$items[$index] = $item;
-	}
+		foreach ($items as $index => $item) {
+			$date = \DateTime::createFromFormat('Y-m-d', $item['time']);
+			if (!$date) {
+				$date = \DateTime::createFromFormat('Y-m-d H:i:s', $item['time']);
+			}
+			if (!$date) {
+				throw new \Exception('unable to parse date: ' . $item['time']);
+			}
+			$item['time'] = $date->format('Y-m-d');
+			$item['sortKey'] = $date->getTimestamp();
 
-	usort($items, function ($a, $b) {
-		$a = $a['sortKey'];
-		$b = $b['sortKey'];
-		if ($a > $b) {
-			return -1;
-		} else if ($a < $b) {
-			return 1;
+			$key = $item['time'] . '-' . $item['version'];
+			if (in_array($key, $unique)) {
+				unset($items[$index]);
+				continue;
+			}
+			$unique[] = $key;
+
+			$items[$index] = $item;
 		}
-		return 0;
-	});
 
-	foreach ($items as $index => $item) {
-		unset($item['sortKey']);
-		$items[$index] = $item;
+		usort($items, function ($a, $b) {
+			$a = $a['sortKey'];
+			$b = $b['sortKey'];
+			if ($a > $b) {
+				return -1;
+			} else if ($a < $b) {
+				return 1;
+			}
+			return 0;
+		});
+
+		foreach ($items as $index => $item) {
+			unset($item['sortKey']);
+			$items[$index] = $item;
+		}
+
+		$formatted[$name] = $items;
+	}
+	$payload = $formatted;
+
+	$names = array_keys($payload);
+	natcasesort($names);
+
+	$sorted = [];
+	foreach ($names as $name) {
+		$sorted[$name] = $payload[$name];
 	}
 
-	$formatted[$name] = $items;
-}
-$payload = $formatted;
-
-$names = array_keys($payload);
-natcasesort($names);
-
-$sorted = [];
-foreach ($names as $name) {
-	$sorted[$name] = $payload[$name];
-}
-
-$payload = $sorted;
-$sorted = [];
-foreach ($preferredPatterns as $pattern) {
+	$payload = $sorted;
+	$sorted = [];
+	foreach ($preferredPatterns as $pattern) {
+		foreach ($payload as $name => $items) {
+			if (preg_match('~' . $pattern . '~', $name)) {
+				$sorted[$name] = $items;
+				unset($payload[$name]);
+			}
+		}
+	}
 	foreach ($payload as $name => $items) {
-		if (preg_match('~' . $pattern . '~', $name)) {
+		if (!in_array($name, $last)) {
 			$sorted[$name] = $items;
 			unset($payload[$name]);
 		}
 	}
-}
-foreach ($payload as $name => $items) {
-	if (!in_array($name, $last)) {
+	foreach ($payload as $name => $items) {
+		if (isset($rename[$name])) {
+			$name = $rename[$name];
+		} else if (stripos($name, 'aixun_') === 0) {
+			$name = substr($name, 6);
+		}
 		$sorted[$name] = $items;
-		unset($payload[$name]);
 	}
-}
-foreach ($payload as $name => $items) {
-	if (isset($rename[$name])) {
-		$name = $rename[$name];
-	} else if (stripos($name, 'aixun_') === 0) {
-		$name = substr($name, 6);
-	}
-	$sorted[$name] = $items;
-}
 
-$payload = $sorted;
+	$payload = $sorted;
 
-// save result
-$payloadJson = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
-file_put_contents($changelogPath, $payloadJson);
+	// save result
+	$payloadJson = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+	file_put_contents($changelogPath, $payloadJson);
 
-// latest
-$flattened = [];
-foreach ($payload as $name => $versions) {
-	foreach ($versions as $item) {
-		if ($name === 'App') {
-			continue;
+	// latest
+	$flattened = [];
+	foreach ($payload as $name => $versions) {
+		foreach ($versions as $item) {
+			if ($name === 'App') {
+				continue;
+			}
+			$date = \DateTime::createFromFormat('Y-m-d', $item['time']);
+			$date->setTime(0, 0);
+			$flattened[] = [
+				'name' => $name,
+				'version' => $item['version'],
+				'date' => $date,
+				'timestamp' => $date->getTimestamp(),
+			];
 		}
-		$date = \DateTime::createFromFormat('Y-m-d', $item['time']);
-		$date->setTime(0, 0);
-		$flattened[] = [
-			'name' => $name,
-			'version' => $item['version'],
-			'date' => $date,
-			'timestamp' => $date->getTimestamp(),
-		];
 	}
-}
 
-usort($flattened, function ($a, $b) {
-	$a = $a['timestamp'];
-	$b = $b['timestamp'];
-	if ($a > $b) {
-		return 1;
-	} else if ($a < $b) {
-		return -1;
-	}
-	return 0;
-});
-
-$latest = [];
-$mostRecentDate = null;
-for ($number = 1; $number <= 5; $number++) {
-	$item = array_pop($flattened);
-	if ($item) {
-		if (preg_match('~[a-z0-9]+:v?([a-z0-9.]+)~i', $item['version'], $matches)) {
-			$item['version'] = $matches[1];
+	usort($flattened, function ($a, $b) {
+		$a = $a['timestamp'];
+		$b = $b['timestamp'];
+		if ($a > $b) {
+			return 1;
+		} else if ($a < $b) {
+			return -1;
 		}
-		if ($mostRecentDate === null) {
-			$mostRecentDate = $item['date'];
+		return 0;
+	});
+
+	$latest = [];
+	$mostRecentDate = null;
+	for ($number = 1; $number <= 5; $number++) {
+		$item = array_pop($flattened);
+		if ($item) {
+			if (preg_match('~[a-z0-9]+:v?([a-z0-9.]+)~i', $item['version'], $matches)) {
+				$item['version'] = $matches[1];
+			}
+			if ($mostRecentDate === null) {
+				$mostRecentDate = $item['date'];
+			}
+			$date = $item['date']->format('Y-m-d');
+			$latest[] = $item['name'] . '-' . $item['version'] . '@' . $date;
 		}
-		$date = $item['date']->format('Y-m-d');
-		$latest[] = $item['name'] . '-' . $item['version'] . '@' . $date;
+	}
+	$latest = implode(', ', $latest);
+	if ($mostRecentDate !== null) {
+		$now = new \DateTime();
+		$now->setTime(0, 0);
+		$diff = $now->getTimestamp() - $mostRecentDate->getTimestamp();
+		$days = (int) round($diff / 86400);
+		$latest = $days . ' ' . ($days === 1 ? 'day' : 'days') . ' ago (' . $latest . ')';
+	}
+	$latest = [
+		'message' => $latest,
+	];
+	$latestJson = json_encode($latest, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+	file_put_contents($wwwDir . '/files/latest.json', $latestJson);
+}
+
+function run()
+{
+	if (PHP_SAPI !== 'cli') {
+		echo 'error: this is CLI script only';
+		exit(1);
+	}
+	try {
+
+		$dataDir = __DIR__ . '/data';
+		$wwwDir = realpath(__DIR__ . '/../');
+		update($dataDir, $wwwDir);
+		echo 'ok' . "\n";
+	} catch (ConnectException $e) {
+		echo 'temporary error: ' . $e->getMessage() . "\n";
 	}
 }
-$latest = implode(', ', $latest);
-if ($mostRecentDate !== null) {
-	$now = new \DateTime();
-	$now->setTime(0, 0);
-	$diff = $now->getTimestamp() - $mostRecentDate->getTimestamp();
-	$days = (int) round($diff / 86400);
-	$latest = $days . ' ' . ($days === 1 ? 'day' : 'days') . ' ago (' . $latest . ')';
-}
-$latest = [
-	'message' => $latest,
-];
-$latestJson = json_encode($latest, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
-file_put_contents($wwwDir . '/files/latest.json', $latestJson);
 
-echo 'ok' . "\n";
+run();
