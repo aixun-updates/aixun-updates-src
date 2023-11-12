@@ -1,5 +1,6 @@
 /backend/app/data/*
 /backend/app/vendor/
+/backend/app/config.php
 /backend/files/*
 /backend/firmware/*
 /backend/*.json
