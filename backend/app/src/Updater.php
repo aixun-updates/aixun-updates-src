@@ -246,7 +246,9 @@ class Updater
 
 			foreach ($items as $index => $item) {
 				$date = \DateTime::createFromFormat('Y-m-d', $item['time']);
-				if (!$date) {
+				if ($date) {
+					$date->setTime(0, 0);
+				} else {
 					$date = \DateTime::createFromFormat('Y-m-d H:i:s', $item['time']);
 				}
 				if (!$date) {
@@ -254,6 +256,7 @@ class Updater
 				}
 				$item['time'] = $date->format('Y-m-d');
 				$item['sortKey'] = $date->getTimestamp();
+				$item['fallbackSortKey'] = $item['version'];
 
 				$key = $item['time'] . '-' . $item['version'];
 				if (in_array($key, $unique)) {
@@ -265,15 +268,15 @@ class Updater
 				$items[$index] = $item;
 			}
 
-			usort($items, function ($a, $b) {
-				$a = $a['sortKey'];
-				$b = $b['sortKey'];
+			usort($items, function ($itemA, $itemB) {
+				$a = $itemA['sortKey'];
+				$b = $itemB['sortKey'];
 				if ($a > $b) {
 					return -1;
 				} else if ($a < $b) {
 					return 1;
 				}
-				return 0;
+				return strnatcasecmp($itemA['fallbackSortKey'], $itemB['fallbackSortKey']) * -1;
 			});
 
 			foreach ($items as $index => $item) {
