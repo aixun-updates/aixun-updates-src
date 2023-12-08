@@ -179,13 +179,16 @@ class Updater
 		$payload = $this->fillFirmware($payload, $firmwareTemplateFile, $firmwareLinks);
 
 		// rules for sorting and renaming of specific models
+		$rename = [
+			'AIXUN' => 'App',
+		];
 		$preferredPatterns = [
 			'^T[0-9A-Z]+$',
 			'^P[0-9A-Z]+$',
 		];
-		$last = ['AIXUN'];
-		$rename = [
-			'AIXUN' => 'App',
+		$detestedPatterns = [
+			'^App$',
+			'^AS_.+$',
 		];
 
 		// merge previous changelog with current
@@ -287,7 +290,13 @@ class Updater
 
 		$sorted = [];
 		foreach ($names as $name) {
-			$sorted[$name] = $payload[$name];
+			$key = $name;
+			if (isset($rename[$key])) {
+				$key = $rename[$key];
+			} else if (stripos($key, 'aixun_') === 0) {
+				$key = substr($key, 6);
+			}
+			$sorted[$key] = $payload[$name];
 		}
 
 		$payload = $sorted;
@@ -301,18 +310,16 @@ class Updater
 			}
 		}
 		foreach ($payload as $name => $items) {
-			if (!in_array($name, $last)) {
-				$sorted[$name] = $items;
-				unset($payload[$name]);
-			}
-		}
-		foreach ($payload as $name => $items) {
-			if (isset($rename[$name])) {
-				$name = $rename[$name];
-			} else if (stripos($name, 'aixun_') === 0) {
-				$name = substr($name, 6);
-			}
 			$sorted[$name] = $items;
+			unset($payload[$name]);
+		}
+		foreach ($detestedPatterns as $pattern) {
+			foreach ($sorted as $name => $items) {
+				if (preg_match('~' . $pattern . '~', $name)) {
+					unset($sorted[$name]);
+					$sorted[$name] = $items;
+				}
+			}
 		}
 
 		$payload = $sorted;
