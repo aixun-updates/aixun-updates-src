@@ -1,5 +1,5 @@
-aixun-updates-src
------------------
+Unofficial changelog of updates for AiXun devices
+-------------------------------------------------
 
 This is source code/development repository for https://aixun-updates.github.io/.
 
