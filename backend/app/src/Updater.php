@@ -3,7 +3,6 @@
 namespace App;
 
 use GuzzleHttp\Client;
-use GuzzleHttp\Exception\ClientException;
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Exception\RequestException;
 
@@ -53,68 +52,9 @@ class Updater
 
 	public function update()
 	{
-		// fetch latest changelogs from manufacturer
-		$urls = [
-			'http://api.jcxxkeji.com:9000/upload/bott/JCID_dev_upgrade_note.json',
-			'http://api.jcxxkeji.com:9000/upload/bott/JCID_config_note.zip', // this is fake .zip file containing JSON
-		];
-
-		$filePath = $this->dataDir . '/remote-aixun-file-list.json';
-		$this->fetchFile('post', 'https://api.jcidtech.com/api/v1/aixun_config_file_controller/query', $filePath, [
-			'headers' => [
-				'ContentType' => 'application/json',
-			],
-		]);
-		$contents = file_get_contents($filePath);
-		$response = $this->decodeCorruptedJson($contents);
-		$firmwareLinks = [];
-		$firmwareTemplateFile = null;
-		if (isset($response['msg']) && $response['msg'] === 'success') {
-			foreach ($response['data'] as $item) {
-				if ($item['fileName'] === 'JCID_dev_upgrade_note.zip') {
-					$urls[] = $item['url'];
-				} else if ($item['fileName'] === 'JCID_config_test.zip') {
-					$firmwareTemplateFile = $item['url'];
-				} else if ($this->endsWith($item['fileName'], '.bin')) {
-					$firmwareLinks[$item['fileName']] = $item['url'];
-				}
-			}
-		}
-
 		$files = [];
-		$directoriesToRemove = [];
-		foreach ($urls as $url) {
-			$key = sha1($url);
 
-			// only API returns actual .zip files
-			$zip = $this->endsWith($url, '.zip') && strpos($url, 'aixun-file.oss-cn-shenzhen.aliyuncs.com') !== false;
-
-			$filePath = $this->dataDir . '/remote-' . $key . '.' . ($zip ? 'zip' : 'json');
-			$this->fetchFile('get', $url, $filePath);
-
-			if ($zip) {
-				$zip = new \ZipArchive();
-				$zip->open($filePath);
-				$tempDir = $filePath . '-extracted';
-				if (!file_exists($tempDir)) {
-					mkdir($tempDir, 0777, true);
-				}
-				$zip->extractTo($tempDir);
-				$zip->close();
-
-				foreach (scandir($tempDir) as $item) {
-					if ($this->endsWith($item, '.json')) {
-						$files[] = $tempDir . DIRECTORY_SEPARATOR . $item;
-					}
-				}
-
-				unlink($filePath);
-				$directoriesToRemove[] = $tempDir;
-			} else {
-				$files[] = $filePath;
-			}
-		}
-
+		// fetch latest changelogs from manufacturer
 		$apiChangelogPath = $this->dataDir . '/remote-aixun-api-changelog.json';
 		$this->fetchFile('post', 'https://api.jcidtech.com/api/v1/aixun_config_file_new_controller/query', $apiChangelogPath, [
 			'headers' => [
@@ -170,13 +110,6 @@ class Updater
 				}
 			}
 		}
-
-		foreach ($directoriesToRemove as $path) {
-			$this->rmTree($path);
-		}
-
-		// fetch and fill firmware files
-		$payload = $this->fillFirmware($payload, $firmwareTemplateFile, $firmwareLinks);
 
 		// rules for sorting and renaming of specific models
 		$rename = [
@@ -388,104 +321,6 @@ class Updater
 		];
 		$latestJson = json_encode($latest, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
 		file_put_contents($this->wwwDir . '/files/latest.json', $latestJson);
-	}
-
-
-	public function fillFirmware($payload, $firmwareTemplateFile, array $firmwareLinks)
-	{
-		$cache = $this->dataDir . '/firmware.json';
-		if (file_exists($cache)) {
-			$list = json_decode(file_get_contents($cache), true);
-		} else {
-			$list = [];
-		}
-
-		$firmwareDir = $this->wwwDir . '/firmware';
-		if (!file_exists($firmwareDir)) {
-			mkdir($firmwareDir, 0777, true);
-		}
-
-		$templateFile = $this->dataDir . '/template.txt';
-		// old url: http://api.jcxxkeji.com:9000/upload/bott/JCID_config_test.zip
-		// new url is obtained dynamically from API
-		$this->fetchFile('get', $firmwareTemplateFile, $templateFile);
-
-		$section = null;
-		$sections = [];
-		$template = file_get_contents($templateFile);
-		foreach (explode("\n", $template) as $line) {
-			$line = trim($line);
-			if (preg_match('~^\[([^]]+)\]$~i', $line, $matches)) {
-				$section = $matches[1];
-			} else if ($section) {
-				if (!isset($sections[$section])) {
-					$sections[$section] = [];
-				}
-				$parts = explode('=', $line, 2);
-				$parts = array_map('trim', $parts);
-				if (count($parts) === 2) {
-					[$name, $value] = $parts;
-					$sections[$section][$name] = $value;
-				}
-			}
-		}
-		$template = $sections;
-
-		foreach ($payload as $parent => $items) {
-			$prefix = 'JC_M_' . $parent;
-			foreach ($template as $templateName => $properties) {
-				if ($this->endsWith($templateName, $parent)) {
-					$prefix = substr($properties['Bin_Name'], 0, -4);
-					break;
-				}
-			}
-
-			foreach ($items as $index => $item) {
-				$parts = explode(':', $item['version'], 2);
-				[$name, $version] = $parts;
-				if (isset($list[$name][$version])) {
-					$fileName = $list[$name][$version];
-				} else {
-					$fileName = $prefix . '_' . $version . '.bin';
-					if (isset($item['url'])) {
-						$url = $item['url'];
-						$fileName = $item['fileName'];
-					} else if (isset($firmwareLinks[$fileName])) {
-						$url = $firmwareLinks[$fileName];
-					} else {
-						$url = 'http://api.jcxxkeji.com:9000/upload/bott/' . $fileName;
-					}
-
-					$firmwarePath = $firmwareDir . '/' . $this->sanitize($fileName);
-
-					if (!file_exists($firmwarePath)) {
-						try {
-							$this->fetchFile('get', $url, $firmwarePath);
-						} catch (ClientException $e) {
-							if ($e->getCode() === 404) {
-								$fileName = false;
-								if (file_exists($firmwarePath)) {
-									unlink($firmwarePath);
-								}
-							} else {
-								throw $e;
-							}
-						}
-					}
-
-					if (!isset($list[$name])) {
-						$list[$name] = [];
-					}
-					$list[$name][$version] = $fileName;
-				}
-
-				$payload[$parent][$index]['fileName'] = $fileName;
-			}
-		}
-
-		file_put_contents($cache, json_encode($list, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
-
-		return $payload;
 	}
 
 
