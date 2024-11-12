@@ -260,6 +260,9 @@ class Updater
 
 		$payload = $sorted;
 
+		// download missing firmware
+		$this->downloadFirmware($payload);
+
 		// save result
 		$payloadJson = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
 		file_put_contents($changelogPath, $payloadJson);
@@ -321,6 +324,23 @@ class Updater
 		];
 		$latestJson = json_encode($latest, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
 		file_put_contents($this->wwwDir . '/files/latest.json', $latestJson);
+	}
+
+
+	private function downloadFirmware(array $payload)
+	{
+		$firmwareDirectory = $this->wwwDir . '/firmware';
+		foreach ($payload as $versions) {
+			foreach ($versions as $version) {
+				if (!isset($version['fileName'])) {
+					continue;
+				}
+				$firmwarePath = $firmwareDirectory . '/' . $version['fileName'];
+				if (!file_exists($firmwarePath)) {
+					$this->fetchFile('get', $version['url'], $firmwarePath);
+				}
+			}
+		}
 	}
 
 
