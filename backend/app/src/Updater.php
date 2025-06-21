@@ -116,6 +116,7 @@ class Updater
 			'AIXUN' => 'App',
 		];
 		$preferredPatterns = [
+			'^T[0-9][A-Z]+$',
 			'^T[0-9A-Z]+$',
 			'^P[0-9A-Z]+$',
 		];
