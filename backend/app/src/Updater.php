@@ -5,6 +5,7 @@ namespace App;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Exception\RequestException;
+use ZipArchive;
 
 
 /**
@@ -55,16 +56,70 @@ class Updater
 		$files = [];
 
 		// fetch latest changelogs from manufacturer
-		$apiChangelogPath = $this->dataDir . '/remote-aixun-api-changelog.json';
-		$this->fetchFile('post', 'https://api.jcidtech.com/api/v1/aixun_config_file_new_controller/query', $apiChangelogPath, [
-			'headers' => [
-				'ContentType' => 'application/json',
-			],
-		]);
-		$contents = file_get_contents($apiChangelogPath);
-		$response = $this->decodeCorruptedJson($contents);
+		$previousPayload = [];
+		$fileNames = [];
+		$changelogPath = $this->wwwDir . '/files/changelog.json';
+		if (file_exists($changelogPath)) {
+			$contents = file_get_contents($changelogPath);
+			$previousPayload = json_decode($contents, true);
+			if (!$previousPayload || !is_array($previousPayload)) {
+				$previousPayload = [];
+			}
+			$fileNames = array_keys($previousPayload);
+		}
+
+		$this->output('fetching new products...');
+		$groups = $this->queryApi(['AIXUN_Product_New'], $this->dataDir . '/remote-aixun-api-product-new.json');
+		foreach ($groups as $group) {
+			$url = $group['url'];
+			if (!preg_match('~\.zip$~i', $url)) {
+				throw new \Exception('unsupported format: ' . $url);
+			}
+
+			$zipPath = $this->dataDir . '/remote-aixun-api-product-new.zip';
+			$this->fetchFile('get', $url, $zipPath);
+			$zip = new ZipArchive();
+			if (!$zip->open($zipPath)) {
+				throw new \Exception('unable to open zip: ' . $zipPath);
+			}
+			$totalCount = 0;
+			$unseenCount = 0;
+			for ($index = 0; $index < $zip->numFiles; $index++) {
+				$relativePath = $zip->getNameIndex($index);
+				if (substr($relativePath, -1) == '/') {
+					continue;
+				}
+				$totalCount++;
+				$name = pathinfo($relativePath, PATHINFO_FILENAME);
+				if (!in_array($name, $fileNames)) {
+					$fileNames[] = $name;
+					$unseenCount++;
+				}
+			}
+			$zip->close();
+			$this->output('found ' . $totalCount . ' total new and ' . $unseenCount . ' unseen');
+		}
+
+		$fileNamesLeft = $fileNames;
+		$groups = [];
+		$chunkSize = 100;
+		$page = 0;
+		while (count($fileNamesLeft) > 0) {
+			$page++;
+			$myFileNames = [];
+			for ($index = 0; $index < $chunkSize; $index++) {
+				$myFileNames[] = array_shift($fileNamesLeft);
+			}
+			$this->output('fetching changelog page ' . $page . ' (requested ' . count($myFileNames) . ' results)...');
+			$path = $this->dataDir . '/remote-aixun-api-changelog-page-' . $page . '.json';
+			$myGroups = $this->queryApi($myFileNames, $path);
+			$groups = array_merge($groups, $myGroups);
+			$this->output('found ' . count($myGroups) . ' results');
+		}
+
+		$this->output('processing changelog data...');
 		$converted = [];
-		foreach ($response['data'] as $group) {
+		foreach ($groups as $group) {
 			$device = $group['fileName'];
 			if (!isset($converted[$device])) {
 				$converted[$device] = [];
@@ -126,35 +181,28 @@ class Updater
 		];
 
 		// merge previous changelog with current
-		$changelogPath = $this->wwwDir . '/files/changelog.json';
-		if (file_exists($changelogPath)) {
-			$contents = file_get_contents($changelogPath);
-			$previousPayload = json_decode($contents, true);
-			if ($previousPayload) {
-				foreach ($previousPayload as $name => $items) {
-					$items = $this->normalizePayloadVersionFormat($name, $items);
+		foreach ($previousPayload as $name => $items) {
+			$items = $this->normalizePayloadVersionFormat($name, $items);
 
-					$index = array_search($name, $rename);
-					if ($index !== false) {
-						$name = $index;
-					} else if (stripos($name, 'aixun_') === 0) {
-						$name = substr($name, 6);
-					}
+			$index = array_search($name, $rename);
+			if ($index !== false) {
+				$name = $index;
+			} else if (stripos($name, 'aixun_') === 0) {
+				$name = substr($name, 6);
+			}
 
-					if (isset($payload[$name])) {
-						$currentVersions = [];
-						foreach ($payload[$name] as $item) {
-							$currentVersions[] = $item['version'];
-						}
-						foreach ($items as $item) {
-							if (!in_array($item['version'], $currentVersions)) {
-								$payload[$name][] = $item;
-							}
-						}
-					} else {
-						$payload[$name] = $items;
+			if (isset($payload[$name])) {
+				$currentVersions = [];
+				foreach ($payload[$name] as $item) {
+					$currentVersions[] = $item['version'];
+				}
+				foreach ($items as $item) {
+					if (!in_array($item['version'], $currentVersions)) {
+						$payload[$name][] = $item;
 					}
 				}
+			} else {
+				$payload[$name] = $items;
 			}
 		}
 
@@ -262,6 +310,7 @@ class Updater
 		$payload = $sorted;
 
 		// download missing firmware
+		$this->output('downloading firmware files...');
 		$this->downloadFirmware($payload);
 
 		// save result
@@ -328,6 +377,24 @@ class Updater
 	}
 
 
+	private function queryApi($fileNames, $path)
+	{
+		$this->fetchFile('post', 'https://api.jcidtech.com/api/v1/aixun_config_file_new_controller/query', $path, [
+			'headers' => [
+				'ContentType' => 'application/json;charset=UTF-8',
+				'token' => '',
+				'languageType' => 'en',
+			],
+			'json' => [
+				'fileName' => $fileNames,
+			],
+		]);
+		$contents = file_get_contents($path);
+		$response = $this->decodeCorruptedJson($contents);
+		return $response['data'];
+	}
+
+
 	private function downloadFirmware(array $payload)
 	{
 		$firmwareDirectory = $this->wwwDir . '/firmware';
@@ -339,6 +406,7 @@ class Updater
 				$firmwarePath = $firmwareDirectory . '/' . $version['fileName'];
 				if (!file_exists($firmwarePath)) {
 					$this->fetchFile('get', $version['url'], $firmwarePath);
+					$this->output('found new firmware file: ' . $version['fileName']);
 				}
 			}
 		}
@@ -478,6 +546,7 @@ class Updater
 
 	public function output($message)
 	{
-		echo $message . "\n";
+		$timestamp = date('Y-m-d H:i:s');
+		echo $timestamp . ' - ' . $message . "\n";
 	}
 }

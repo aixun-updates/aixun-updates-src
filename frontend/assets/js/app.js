@@ -100,6 +100,9 @@ $(function () {
 
 			var counter = 0;
 			for (var model in data) {
+				if (model.startsWith('Product_')) {
+					continue;
+				}
 				counter++;
 
 				var navItem = navTemplate.clone();
@@ -116,20 +119,20 @@ $(function () {
 				var wrapper = $('<div class="group">');
 				var headline = $('<span>').text(model).prepend('<b>AiXun</b> ');
 				wrapper.append($('<h2>').append(headline.clone(true)));
-				for (var index in data[model]) {
-					var item = $('<div class="item">');
-					var version = data[model][index]['version'];
-					var match = /^[a-z0-9]+:v?([a-z0-9.]+)$/i.exec(version);
+				for (let index in data[model]) {
+					let item = $('<div class="item">');
+					let version = data[model][index]['version'];
+					let match = /^[a-z0-9]+:v?([a-z0-9.]+)$/i.exec(version);
 					if (match) {
 						version = match[1];
 					}
 					version += ' (' + data[model][index]['time'] + ')';
-					var name = $('<h3>');
+					let name = $('<h3>');
 					name.text(version);
-					var fileName = data[model][index]['fileName'];
+					let fileName = data[model][index]['fileName'];
 					if (fileName) {
-						var link = $('<a>');
-						var url = config.rootUrl + '/firmware/' + encodeURIComponent(fileName);
+						let link = $('<a>');
+						let url = config.rootUrl + '/firmware/' + encodeURIComponent(fileName);
 						link.attr('href', url);
 						link.text(fileName);
 						name.append(link);
