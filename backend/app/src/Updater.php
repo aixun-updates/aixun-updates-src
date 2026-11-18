@@ -16,7 +16,8 @@ class Updater
 
 	private $dataDir;
 	private $wwwDir;
-	private $changelogPath;
+	private $dirtyChangelogPath;
+	private $cleanChangelogPath;
 	private $configCache = null;
 	private $fetchUseProxy = false;
 
@@ -25,7 +26,8 @@ class Updater
 	{
 		$this->dataDir = $dataDir;
 		$this->wwwDir = $wwwDir;
-		$this->changelogPath = $this->wwwDir . '/files/changelog.json';
+		$this->dirtyChangelogPath = $this->wwwDir . '/files/changelog-dirty.json';
+		$this->cleanChangelogPath = $this->wwwDir . '/files/changelog.json';
 	}
 
 
@@ -138,6 +140,16 @@ class Updater
 			$this->output('found ' . count($myGroups) . ' results');
 		}
 
+		$this->output('fetching all endpoint...');
+		$allPath = $this->dataDir . '/remote-aixun-api-all.json';
+		$myGroups = $this->queryApi(null, $allPath);
+		foreach ($myGroups as $group) {
+			$device = $group['fileName'];
+			if (!in_array($device, $fileNames)) {
+				$groups[] = $group;
+			}
+		}
+
 		$this->output('processing changelog data...');
 		$converted = [];
 		foreach ($groups as $group) {
@@ -188,18 +200,14 @@ class Updater
 		}
 
 		// rules for sorting and renaming of specific models
-		$rename = [
-			'AIXUN' => 'App',
-		];
+		$rename = [];
 		$preferredPatterns = [
+			'^T3A$',
 			'^T[0-9][A-Z]+$',
 			'^T[0-9A-Z]+$',
 			'^P[0-9A-Z]+$',
 		];
-		$detestedPatterns = [
-			'^App$',
-			'^AS_.+$',
-		];
+		$detestedPatterns = [];
 
 		// merge previous changelog with current
 		foreach ($previousPayload as $name => $items) {
@@ -228,26 +236,16 @@ class Updater
 		}
 
 		// sorting and filtering of duplicates
-		$excludedDevices = [
-			'AIXUN_Dev_Pic',
-			'AIXUN_Upgrade_Data',
-			'D11_offical_standard',
-			'testFileName1',
-			'AAA',
-			'Hulu_J2',
-			'Hulu_J3',
-			'Hulu_U1',
-			'iPhoneX_J5800',
-			'Power',
-		];
 		$formatted = [];
 		$unique = [];
 		foreach ($payload as $name => $items) {
-			if (in_array($name, $excludedDevices)) {
-				continue;
-			}
-
 			foreach ($items as $index => $item) {
+				$extension = pathinfo($item['fileName'], PATHINFO_EXTENSION);
+				if (in_array($extension, ['zip'])) { // we don't care about non-firmware
+					unset($items[$index]);
+					continue;
+				}
+
 				$date = \DateTime::createFromFormat('Y-m-d', $item['time']);
 				if ($date) {
 					$date->setTime(0, 0);
@@ -287,6 +285,9 @@ class Updater
 				$items[$index] = $item;
 			}
 
+			if (count($items) === 0) {
+				continue;
+			}
 			$formatted[$name] = $items;
 		}
 		$payload = $formatted;
@@ -336,7 +337,58 @@ class Updater
 
 		// save result
 		$payloadJson = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
-		file_put_contents($this->changelogPath, $payloadJson);
+		file_put_contents($this->dirtyChangelogPath, $payloadJson);
+
+		// save clean result
+		$explicitlyExcluded = [
+			'AAA',
+			'DHJ',
+			'T3E_0.01',
+			'HPV1',
+		];
+		$excludedPatterns = [
+			'~[a-z]+~', // model names should have only capital letters
+			'~^AS_~',
+			'~^ESP32~',
+		];
+		$cleanPayload = [];
+		foreach ($payload as $model => $items) {
+			// simple exclusion patterns
+			if (in_array($model, $explicitlyExcluded)) {
+				continue;
+			}
+			foreach ($excludedPatterns as $pattern) {
+				if (preg_match($pattern, $model)) {
+					continue 2;
+				}
+			}
+
+			// exclude models only with testing versions
+			$onlyTest = true;
+			foreach ($items as $item) {
+				$note = $item['en_note'] ?: $item['ch_note'];
+				if (stripos($note, 'test') === false && preg_match('~[^0-9\s]+~', $note)) {
+					$onlyTest = false;
+					break;
+				}
+			}
+			if ($onlyTest) {
+				continue;
+			}
+
+			// exclude models with single empty version
+			if (count($items) === 1) {
+				$item = reset($items);
+				$note = (string) ($item['en_note'] ?: $item['ch_note']);
+				if (!$note) {
+					continue;
+				}
+			}
+
+			$cleanPayload[$model] = $items;
+		}
+		$payloadJson = json_encode($cleanPayload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+		file_put_contents($this->cleanChangelogPath, $payloadJson);
 	}
 
 
@@ -405,7 +457,7 @@ class Updater
 
 	private function queryApi($fileNames, $path, $expectedList = true, $retries = 3)
 	{
-		$url = 'https://api.jcidtech.com/api/v1/aixun_config_file_new_controller/query';
+		$url = 'https://apis.jcidtech.com/api/v1/aixun_config_file_new_controller/query';
 		$options = [
 			'headers' => [
 				'ContentType' => 'application/json;charset=UTF-8',
@@ -550,10 +602,10 @@ class Updater
 
 	private function getCurrentChangelog()
 	{
-		if (!file_exists($this->changelogPath)) {
+		if (!file_exists($this->dirtyChangelogPath)) {
 			return [];
 		}
-		$contents = file_get_contents($this->changelogPath);
+		$contents = file_get_contents($this->dirtyChangelogPath);
 		$payload = json_decode($contents, true);
 		if (!$payload || !is_array($payload)) {
 			$payload = [];

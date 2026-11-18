@@ -22,12 +22,12 @@ $(function () {
 		$('.group[data-id="' + groupId + '"]').addClass('active');
 		if ($('#nav').is('.in')) {
 			$('[data-target="#nav"]').click();
-			$("html, body").animate({scrollTop: 0}, 250);
 		}
 		var parent = control.closest('[data-more]');
 		if (parent.length) {
 			parent.addClass('active');
 		}
+		window.scrollTo(0, 0);
 		return groupId;
 	};
 
@@ -100,9 +100,6 @@ $(function () {
 
 			var counter = 0;
 			for (var model in data) {
-				if (model.startsWith('Product_')) {
-					continue;
-				}
 				counter++;
 
 				var navItem = navTemplate.clone();
