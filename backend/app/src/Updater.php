@@ -108,9 +108,15 @@ class Updater
 			$this->output('found ' . $totalCount . ' total new and ' . $unseenCount . ' unseen');
 		}
 
+		foreach (scandir($this->dataDir) as $fileName) {
+			if (stripos($fileName, 'remote-aixun-api-changelog-page-') === 0) {
+				unlink($this->dataDir . '/' . $fileName);
+			}
+		}
+
 		$fileNamesLeft = $fileNames;
 		$groups = [];
-		$chunkSize = 100;
+		$chunkSize = 25;
 		$page = 0;
 		while (count($fileNamesLeft) > 0) {
 			$page++;
@@ -118,7 +124,10 @@ class Updater
 			for ($index = 0; $index < $chunkSize; $index++) {
 				$myFileNames[] = array_shift($fileNamesLeft);
 			}
-			$this->output('fetching changelog page ' . $page . ' (requested ' . count($myFileNames) . ' results)...');
+			$this->output(
+				'fetching changelog page ' . $page .
+				' (requested ' . count($myFileNames) . ', left ' . count($fileNamesLeft) . ' results)...'
+			);
 			$path = $this->dataDir . '/remote-aixun-api-changelog-page-' . $page . '.json';
 			$myGroups = $this->queryApi($myFileNames, $path);
 			$groups = array_merge($groups, $myGroups);
@@ -421,7 +430,10 @@ class Updater
 				if ($retry >= $retries) {
 					throw $e;
 				}
-				$this->output('warning: failed to query api, retrying (' . $retry . '/' . $retries . ')...');
+				$this->output(
+					'warning: failed to query api: ' . get_class($e) . ': ' . $e->getMessage() .
+					', retrying (' . $retry . '/' . $retries . ')...'
+				);
 				sleep(10);
 			}
 		}
