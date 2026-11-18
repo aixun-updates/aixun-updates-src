@@ -29,11 +29,11 @@ class Updater
 	}
 
 
-	public function run()
+	public function run($newModelSeed = null)
 	{
 		$result = 'ok';
 		try {
-			$this->fetchChanges();
+			$this->fetchChanges($newModelSeed);
 		} catch (\Exception $e) {
 			$temporary = false;
 			if ($e instanceof ConnectException) {
@@ -68,7 +68,7 @@ class Updater
 	}
 
 
-	private function fetchChanges()
+	private function fetchChanges($newModelSeed = null)
 	{
 		$files = [];
 
@@ -106,6 +106,10 @@ class Updater
 			}
 			$zip->close();
 			$this->output('found ' . $totalCount . ' total new and ' . $unseenCount . ' unseen');
+		}
+
+		if ($newModelSeed !== null) {
+			array_unshift($fileNames, $newModelSeed);
 		}
 
 		foreach (scandir($this->dataDir) as $fileName) {

@@ -11,6 +11,8 @@ if (PHP_SAPI !== 'cli') {
 $dataDir = __DIR__ . '/data';
 $wwwDir = realpath(__DIR__ . '/../');
 
+$newModelSeed = isset($argv[1]) ? $argv[1] : null;
+
 $updater = new App\Updater($dataDir, $wwwDir);
-echo $updater->run() . "\n";
+echo $updater->run($newModelSeed) . "\n";
 exit(0);
