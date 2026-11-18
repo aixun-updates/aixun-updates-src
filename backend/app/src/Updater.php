@@ -16,6 +16,7 @@ class Updater
 
 	private $dataDir;
 	private $wwwDir;
+	private $changelogPath;
 	private $configCache = null;
 	private $fetchUseProxy = false;
 
@@ -24,49 +25,56 @@ class Updater
 	{
 		$this->dataDir = $dataDir;
 		$this->wwwDir = $wwwDir;
+		$this->changelogPath = $this->wwwDir . '/files/changelog.json';
 	}
 
 
-	function run()
+	public function run()
 	{
+		$result = 'ok';
 		try {
-			$this->update();
-			return 'ok';
-		} catch (ConnectException $e) {
-			return 'temporary error: ' . $e->getMessage();
-		} catch (RequestException $e) {
-			$expectedErrors = ['connection reset by peer'];
-			$expected = false;
-			foreach ($expectedErrors as $error) {
-				if (stripos($e->getMessage(), $error) !== false) {
-					$expected = true;
-					break;
+			$this->fetchChanges();
+		} catch (\Exception $e) {
+			$temporary = false;
+			if ($e instanceof ConnectException) {
+				$temporary = true;
+			} else if ($e instanceof RequestException) {
+				$expectedErrors = ['connection reset by peer', 'User was rejected'];
+				foreach ($expectedErrors as $error) {
+					if (stripos($e->getMessage(), $error) !== false) {
+						$temporary = true;
+						break;
+					}
+				}
+			} else if ($e instanceof \RuntimeException) {
+				if (stripos($e->getMessage(), 'Server Error') !== false) {
+					$temporary = true;
 				}
 			}
-			if ($expected) {
-				return 'temporary error: ' . $e->getMessage();
+
+			if ($temporary) {
+				$result = 'temporary error: ' . get_class($e) . ': ' . $e->getMessage();
+			} else {
+				$result = $e;
 			}
-			throw $e;
 		}
+
+		$this->updateLatest();
+
+		if ($result instanceof \Throwable) {
+			throw $result;
+		}
+		return $result;
 	}
 
 
-	public function update()
+	private function fetchChanges()
 	{
 		$files = [];
 
 		// fetch latest changelogs from manufacturer
-		$previousPayload = [];
-		$fileNames = [];
-		$changelogPath = $this->wwwDir . '/files/changelog.json';
-		if (file_exists($changelogPath)) {
-			$contents = file_get_contents($changelogPath);
-			$previousPayload = json_decode($contents, true);
-			if (!$previousPayload || !is_array($previousPayload)) {
-				$previousPayload = [];
-			}
-			$fileNames = array_keys($previousPayload);
-		}
+		$previousPayload = $this->getCurrentChangelog();
+		$fileNames = array_keys($previousPayload);
 
 		$this->output('fetching new products...');
 		$groups = $this->queryApi(['AIXUN_Product_New'], $this->dataDir . '/remote-aixun-api-product-new.json');
@@ -315,9 +323,14 @@ class Updater
 
 		// save result
 		$payloadJson = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
-		file_put_contents($changelogPath, $payloadJson);
+		file_put_contents($this->changelogPath, $payloadJson);
+	}
 
-		// latest
+
+	private function updateLatest()
+	{
+		$payload = $this->getCurrentChangelog();
+
 		$flattened = [];
 		foreach ($payload as $name => $versions) {
 			foreach ($versions as $item) {
@@ -377,9 +390,10 @@ class Updater
 	}
 
 
-	private function queryApi($fileNames, $path)
+	private function queryApi($fileNames, $path, $expectedList = true, $retries = 3)
 	{
-		$this->fetchFile('post', 'https://api.jcidtech.com/api/v1/aixun_config_file_new_controller/query', $path, [
+		$url = 'https://api.jcidtech.com/api/v1/aixun_config_file_new_controller/query';
+		$options = [
 			'headers' => [
 				'ContentType' => 'application/json;charset=UTF-8',
 				'token' => '',
@@ -388,10 +402,29 @@ class Updater
 			'json' => [
 				'fileName' => $fileNames,
 			],
-		]);
-		$contents = file_get_contents($path);
-		$response = $this->decodeCorruptedJson($contents);
-		return $response['data'];
+		];
+
+		$retry = 0;
+		while (true) {
+			try {
+				$this->fetchFile('post', $url, $path, $options);
+				$contents = file_get_contents($path);
+				$response = $this->decodeCorruptedJson($contents);
+				if ($expectedList && !is_array($response['data'])) {
+					throw new \RuntimeException(
+						'invalid response: ' . $contents . ', decoded: ' . json_encode($response)
+					);
+				}
+				return $response['data'];
+			} catch (\Exception $e) {
+				$retry++;
+				if ($retry >= $retries) {
+					throw $e;
+				}
+				$this->output('warning: failed to query api, retrying (' . $retry . '/' . $retries . ')...');
+				sleep(10);
+			}
+		}
 	}
 
 
@@ -413,7 +446,7 @@ class Updater
 	}
 
 
-	public function decodeCorruptedJson($contents)
+	private function decodeCorruptedJson($contents)
 	{
 		$contents = (string) $contents;
 		if (preg_match_all('~\s+"(?:en|ch)_note":\s*"(.*)"$~im', $contents, $matches)) {
@@ -431,7 +464,7 @@ class Updater
 	}
 
 
-	public function normalizePayloadVersionFormat($device, array $versions)
+	private function normalizePayloadVersionFormat($device, array $versions)
 	{
 		foreach ($versions as $index => $item) {
 			// we expect to have original 'NAME:2.0' version format
@@ -453,7 +486,7 @@ class Updater
 	}
 
 
-	public function fetchFile($method, $url, $path, $options = [], $timeout = 60)
+	private function fetchFile($method, $url, $path, $options = [], $timeout = 60)
 	{
 		try {
 			$temp = $path . '.temp';
@@ -499,38 +532,21 @@ class Updater
 	}
 
 
-	public function sanitize($string)
+	private function getCurrentChangelog()
 	{
-		$string = preg_replace("~[^a-z0-9_\-.]+~i", '', $string);
-		$string = preg_replace("~[.]{2,}~", '', $string);
-		return $string;
-	}
-
-
-	public function endsWith($haystack, $needle)
-	{
-		return substr_compare($haystack, $needle, -strlen($needle)) === 0;
-	}
-
-
-	public function rmTree($directory)
-	{
-		$files = new \RecursiveIteratorIterator(
-			new \RecursiveDirectoryIterator($directory, \RecursiveDirectoryIterator::SKIP_DOTS),
-			\RecursiveIteratorIterator::CHILD_FIRST
-		);
-		foreach ($files as $fileinfo) {
-			if ($fileinfo->isDir()) {
-				rmdir($fileinfo->getRealPath());
-			} else {
-				unlink($fileinfo->getRealPath());
-			}
+		if (!file_exists($this->changelogPath)) {
+			return [];
 		}
-		rmdir($directory);
+		$contents = file_get_contents($this->changelogPath);
+		$payload = json_decode($contents, true);
+		if (!$payload || !is_array($payload)) {
+			$payload = [];
+		}
+		return $payload;
 	}
 
 
-	public function getConfig()
+	private function getConfig()
 	{
 		if ($this->configCache === null) {
 			$configPath = __DIR__ . '/../config.php';
@@ -544,7 +560,7 @@ class Updater
 	}
 
 
-	public function output($message)
+	private function output($message)
 	{
 		$timestamp = date('Y-m-d H:i:s');
 		echo $timestamp . ' - ' . $message . "\n";
